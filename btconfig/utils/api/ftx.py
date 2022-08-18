@@ -1,10 +1,13 @@
 from __future__ import division, absolute_import, print_function
 
-from btconfig import BTConfigApiClient
-from datetime import datetime
-
-import backtrader as bt
+import hmac
 import pandas as pd
+import backtrader as bt
+
+from datetime import datetime
+from requests import Request
+
+from btconfig import BTConfigApiClient
 
 
 class FTXClient(BTConfigApiClient):
@@ -32,10 +35,40 @@ class FTXClient(BTConfigApiClient):
             base_url='https://ftx.com/api/', headers={}, **kwargs
         )
 
-    def _requestUrl(self, url):
-        # FIXME auth details can be added here
-        # see https://blog.ftx.com/blog/api-authentication/
-        return super(FTXClient, self)._requestUrl(url)
+    def _request(self, path, exceptions=True, json=False, authenticate=False, **kwargs):
+        '''
+        Runs a request to the given api path
+        '''
+        url = self._getUrl(path, **kwargs)
+        response = self._requestUrl(url, authenticate=authenticate)
+        if response.status_code == 200:
+            if json:
+                return response.json()
+        else:
+            if exceptions:
+                raise Exception(f'{url}: {response.text}')
+            if json:
+                return []
+        return response
+
+    def _requestUrl(self, url, authenticate=False):
+        if not authenticate:
+            response = super(FTXClient, self)._requestUrl(url)
+        else:
+            ts = int(datetime.utcnow().timestamp() * 1000)
+            request = Request('GET', url)
+            prepared = request.prepare()
+            signature_payload = f'{ts}{prepared.method}{prepared.path_url}'
+            if prepared.body:
+                signature_payload += prepared.body
+            signature_payload = signature_payload.encode()
+            signature = hmac.new(self.api_secret.encode(), signature_payload, 'sha256').hexdigest()
+            request.headers = self.headers.copy()
+            request.headers['FTX-KEY'] = self.api_key
+            request.headers['FTX-SIGN'] = signature
+            request.headers['FTX-TS'] = str(ts)
+            response = request.get(url, headers=request.headers)
+        return response
 
     def getMarkets(self):
         # https://docs.ftx.com/#get-markets
